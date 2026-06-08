@@ -19,6 +19,7 @@ from app.schemas import (
     SourceCredibilityCreate, SourceCredibilityOut,
     AuditLogOut, CredibilityScoreOut,
 )
+from app.services.update_feed import create_update_event
 
 router = APIRouter(prefix="/review", tags=["审核"])
 
@@ -30,6 +31,12 @@ def create_appeal(product_id: int, data: CorrectionAppealCreate, db: Session = D
         raise HTTPException(status_code=404, detail="产品不存在")
     appeal = CorrectionAppeal(product_id=product_id, **data.model_dump())
     db.add(appeal)
+    db.flush()
+    create_update_event(
+        product_id, "appeal",
+        f"新增纠错申诉 [{data.field_name}]: {data.proposed_value}",
+        db,
+    )
     db.commit()
     db.refresh(appeal)
     return appeal
@@ -78,6 +85,12 @@ def review_appeal(
         reviewed_by=reviewed_by,
     )
     db.add(log)
+    db.flush()
+    create_update_event(
+        appeal.product_id, "appeal",
+        f"申诉审核{data.status} [{appeal.field_name}]: '{old_value}' -> '{new_value}'",
+        db,
+    )
     db.commit()
     db.refresh(appeal)
     return appeal
@@ -232,8 +245,9 @@ def _build_product_export(p, include_screenshots, include_features, include_comp
     }
     if include_screenshots:
         row["screenshots"] = [
-            {"id": s.id, "file_path": s.file_path, "caption": s.caption,
-             "version_node_id": s.version_node_id, "uploaded_at": s.uploaded_at.isoformat()}
+            {"id": s.id, "product_id": s.product_id, "version_node_id": s.version_node_id,
+             "file_path": s.file_path, "caption": s.caption,
+             "uploaded_at": s.uploaded_at.isoformat()}
             for s in p.screenshots
         ]
     if include_features:
@@ -243,12 +257,6 @@ def _build_product_export(p, include_screenshots, include_features, include_comp
             for fc in p.feature_changes
         ]
     if include_comparisons:
-        row["competitor_comparisons"] = [
-            {"id": c.id, "competitor_id": c.competitor_product_id,
-             "dimension": c.dimension, "product_value": c.product_value,
-             "competitor_value": c.competitor_value}
-            for c in (p.product if hasattr(p, 'competitors') else [])
-        ]
         comps = []
         for c in getattr(p, '_comparisons', []):
             comps.append({
@@ -321,7 +329,7 @@ def export_products(
     ]
 
     if format == "csv":
-        return _export_csv_zip(rows, include_features, include_comparisons,
+        return _export_csv_zip(rows, include_screenshots, include_features, include_comparisons,
                                include_interviews, include_sources, include_citations)
 
     if format == "zip":
@@ -335,7 +343,7 @@ def export_products(
     )
 
 
-def _export_csv_zip(rows, include_features, include_comparisons,
+def _export_csv_zip(rows, include_screenshots, include_features, include_comparisons,
                      include_interviews, include_sources, include_citations):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -378,6 +386,26 @@ def _export_csv_zip(rows, include_features, include_comparisons,
                     "desc": v["desc"], "summary": v["summary"],
                 })
         zf.writestr("version_nodes.csv", versions_csv.getvalue())
+
+        if include_screenshots:
+            ss_csv = io.StringIO()
+            ss_writer = csv.DictWriter(ss_csv, fieldnames=[
+                "screenshot_id", "product_id", "product_name",
+                "version_node_id", "file_path", "caption", "uploaded_at",
+            ])
+            ss_writer.writeheader()
+            for r in rows:
+                for s in r.get("screenshots", []):
+                    ss_writer.writerow({
+                        "screenshot_id": s["id"],
+                        "product_id": s["product_id"],
+                        "product_name": r["name"],
+                        "version_node_id": s.get("version_node_id") or "",
+                        "file_path": s["file_path"],
+                        "caption": s["caption"],
+                        "uploaded_at": s["uploaded_at"],
+                    })
+            zf.writestr("screenshots.csv", ss_csv.getvalue())
 
         prices_csv = io.StringIO()
         pr_writer = csv.DictWriter(prices_csv, fieldnames=["product_id", "product_name", "plan", "old", "new", "date", "currency"])

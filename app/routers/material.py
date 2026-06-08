@@ -10,6 +10,7 @@ from app.schemas import (
     FounderInterviewCreate, FounderInterviewOut,
     PriceChangeCreate, PriceChangeOut,
 )
+from app.services.update_feed import create_update_event
 
 router = APIRouter(prefix="/material", tags=["素材"])
 
@@ -42,6 +43,12 @@ def upload_screenshot(
         caption=caption,
     )
     db.add(screenshot)
+    db.flush()
+    create_update_event(
+        product_id, "material",
+        f"新增截图: {caption or filename}",
+        db,
+    )
     db.commit()
     db.refresh(screenshot)
     return screenshot
@@ -60,6 +67,11 @@ def delete_screenshot(screenshot_id: int, db: Session = Depends(get_db)):
     full_path = os.path.join(UPLOAD_DIR, s.file_path)
     if os.path.exists(full_path):
         os.remove(full_path)
+    create_update_event(
+        s.product_id, "material",
+        f"删除截图: {s.caption or s.file_path}",
+        db,
+    )
     db.delete(s)
     db.commit()
     return {"detail": "已删除"}
@@ -72,6 +84,12 @@ def create_feature_change(product_id: int, data: FeatureChangeCreate, db: Sessio
         raise HTTPException(status_code=404, detail="产品不存在")
     fc = FeatureChange(product_id=product_id, **data.model_dump())
     db.add(fc)
+    db.flush()
+    create_update_event(
+        product_id, "material",
+        f"新增功能变迁 [{data.change_type}] {data.feature_name}: {data.description}",
+        db,
+    )
     db.commit()
     db.refresh(fc)
     return fc
@@ -87,6 +105,11 @@ def delete_feature_change(fc_id: int, db: Session = Depends(get_db)):
     fc = db.query(FeatureChange).filter(FeatureChange.id == fc_id).first()
     if not fc:
         raise HTTPException(status_code=404, detail="功能变迁记录不存在")
+    create_update_event(
+        fc.product_id, "material",
+        f"删除功能变迁 [{fc.change_type}] {fc.feature_name}",
+        db,
+    )
     db.delete(fc)
     db.commit()
     return {"detail": "已删除"}
@@ -99,6 +122,12 @@ def create_interview(product_id: int, data: FounderInterviewCreate, db: Session 
         raise HTTPException(status_code=404, detail="产品不存在")
     interview = FounderInterview(product_id=product_id, **data.model_dump())
     db.add(interview)
+    db.flush()
+    create_update_event(
+        product_id, "material",
+        f"新增访谈 [{data.interviewee_name}]: {data.summary}",
+        db,
+    )
     db.commit()
     db.refresh(interview)
     return interview
@@ -114,6 +143,11 @@ def delete_interview(interview_id: int, db: Session = Depends(get_db)):
     iv = db.query(FounderInterview).filter(FounderInterview.id == interview_id).first()
     if not iv:
         raise HTTPException(status_code=404, detail="访谈不存在")
+    create_update_event(
+        iv.product_id, "material",
+        f"删除访谈 [{iv.interviewee_name}]",
+        db,
+    )
     db.delete(iv)
     db.commit()
     return {"detail": "已删除"}
@@ -126,6 +160,13 @@ def create_price_change(product_id: int, data: PriceChangeCreate, db: Session = 
         raise HTTPException(status_code=404, detail="产品不存在")
     pc = PriceChange(product_id=product_id, **data.model_dump())
     db.add(pc)
+    db.flush()
+    old_str = f"{data.old_price}" if data.old_price is not None else "N/A"
+    create_update_event(
+        product_id, "price",
+        f"价格变化 [{data.plan_name}]: {old_str}→{data.new_price} {data.currency}",
+        db,
+    )
     db.commit()
     db.refresh(pc)
     return pc
@@ -141,6 +182,11 @@ def delete_price_change(pc_id: int, db: Session = Depends(get_db)):
     pc = db.query(PriceChange).filter(PriceChange.id == pc_id).first()
     if not pc:
         raise HTTPException(status_code=404, detail="价格变化记录不存在")
+    create_update_event(
+        pc.product_id, "price",
+        f"删除价格记录 [{pc.plan_name}]",
+        db,
+    )
     db.delete(pc)
     db.commit()
     return {"detail": "已删除"}

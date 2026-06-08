@@ -5,6 +5,7 @@ from sqlalchemy import extract
 from app.database import get_db
 from app.models import Product, TimelineEvent, VersionNode
 from app.schemas import TimelineEventCreate, TimelineEventOut, VersionNodeCreate, VersionNodeOut
+from app.services.update_feed import create_update_event
 
 router = APIRouter(prefix="/timeline", tags=["时间线"])
 
@@ -16,6 +17,12 @@ def create_event(product_id: int, data: TimelineEventCreate, db: Session = Depen
         raise HTTPException(status_code=404, detail="产品不存在")
     event = TimelineEvent(product_id=product_id, **data.model_dump())
     db.add(event)
+    db.flush()
+    create_update_event(
+        product_id, "timeline",
+        f"新增时间线事件 [{data.event_type}]: {data.description}",
+        db,
+    )
     db.commit()
     db.refresh(event)
     return event
@@ -36,6 +43,11 @@ def delete_event(event_id: int, db: Session = Depends(get_db)):
     event = db.query(TimelineEvent).filter(TimelineEvent.id == event_id).first()
     if not event:
         raise HTTPException(status_code=404, detail="事件不存在")
+    create_update_event(
+        event.product_id, "timeline",
+        f"删除时间线事件 [{event.event_type}]: {event.description}",
+        db,
+    )
     db.delete(event)
     db.commit()
     return {"detail": "已删除"}
@@ -48,6 +60,12 @@ def create_version(product_id: int, data: VersionNodeCreate, db: Session = Depen
         raise HTTPException(status_code=404, detail="产品不存在")
     version = VersionNode(product_id=product_id, **data.model_dump())
     db.add(version)
+    db.flush()
+    create_update_event(
+        product_id, "version",
+        f"新增版本节点 [{data.version_name}]: {data.changes_summary or data.description}",
+        db,
+    )
     db.commit()
     db.refresh(version)
     return version
@@ -70,6 +88,12 @@ def update_version(version_id: int, data: VersionNodeCreate, db: Session = Depen
         raise HTTPException(status_code=404, detail="版本节点不存在")
     for key, value in data.model_dump().items():
         setattr(version, key, value)
+    db.flush()
+    create_update_event(
+        version.product_id, "version",
+        f"更新版本节点 [{data.version_name}]: {data.changes_summary or data.description}",
+        db,
+    )
     db.commit()
     db.refresh(version)
     return version
@@ -80,6 +104,11 @@ def delete_version(version_id: int, db: Session = Depends(get_db)):
     version = db.query(VersionNode).filter(VersionNode.id == version_id).first()
     if not version:
         raise HTTPException(status_code=404, detail="版本节点不存在")
+    create_update_event(
+        version.product_id, "version",
+        f"删除版本节点 [{version.version_name}]",
+        db,
+    )
     db.delete(version)
     db.commit()
     return {"detail": "已删除"}

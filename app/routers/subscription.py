@@ -9,23 +9,6 @@ from app.schemas import SubscriptionCreate, SubscriptionOut, UpdateEventOut
 router = APIRouter(prefix="/subscription", tags=["订阅"])
 
 
-def _create_update_event(product_id: int, event_type: str, description: str, db: Session):
-    evt = UpdateEvent(product_id=product_id, event_type=event_type, description=description)
-    db.add(evt)
-    db.flush()
-    subs = db.query(Subscription).filter(Subscription.product_id == product_id).all()
-    for sub in subs:
-        rs = UpdateReadStatus(
-            update_event_id=evt.id,
-            subscriber_email=sub.subscriber_email,
-            is_read=False,
-        )
-        db.add(rs)
-    db.commit()
-    db.refresh(evt)
-    return evt
-
-
 @router.post("/products/{product_id}/subscribe", response_model=SubscriptionOut, summary="订阅更新")
 def subscribe(product_id: int, data: SubscriptionCreate, db: Session = Depends(get_db)):
     product = db.query(Product).filter(Product.id == product_id).first()
@@ -52,6 +35,20 @@ def unsubscribe(product_id: int, email: str, db: Session = Depends(get_db)):
     ).first()
     if not sub:
         raise HTTPException(status_code=404, detail="订阅记录不存在")
+    stale = db.query(UpdateReadStatus).filter(
+        UpdateReadStatus.subscriber_email == email,
+        UpdateReadStatus.is_read == False,
+    ).all()
+    stale_evt_ids = [rs.update_event_id for rs in stale]
+    if stale_evt_ids:
+        stale_product_evt_ids = [r[0] for r in db.query(UpdateEvent.id).filter(
+            UpdateEvent.id.in_(stale_evt_ids),
+            UpdateEvent.product_id == product_id,
+        ).all()]
+        db.query(UpdateReadStatus).filter(
+            UpdateReadStatus.subscriber_email == email,
+            UpdateReadStatus.update_event_id.in_(stale_product_evt_ids),
+        ).delete(synchronize_session=False)
     db.delete(sub)
     db.commit()
     return {"detail": "已取消订阅"}
@@ -65,20 +62,6 @@ def list_subscriptions_by_email(email: str, db: Session = Depends(get_db)):
 @router.get("/products/{product_id}/subscribers", response_model=List[SubscriptionOut], summary="获取产品订阅者列表")
 def list_subscribers(product_id: int, db: Session = Depends(get_db)):
     return db.query(Subscription).filter(Subscription.product_id == product_id).all()
-
-
-@router.post("/products/{product_id}/update-events", response_model=UpdateEventOut, summary="手动触发更新事件")
-def trigger_update_event(
-    product_id: int,
-    event_type: str = Query(..., description="事件类型: timeline/version/material/price/appeal"),
-    description: str = Query("", description="事件描述"),
-    db: Session = Depends(get_db),
-):
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="产品不存在")
-    evt = _create_update_event(product_id, event_type, description, db)
-    return evt
 
 
 @router.get("/feed/{email}", response_model=List[UpdateEventOut], summary="获取订阅更新流")
@@ -96,10 +79,12 @@ def get_update_feed(
     if not sub_product_ids:
         return []
 
-    q = db.query(UpdateEvent).filter(UpdateEvent.product_id.in_(sub_product_ids))
-    if product_id:
-        q = q.filter(UpdateEvent.product_id == product_id)
+    if product_id and product_id in sub_product_ids:
+        sub_product_ids = [product_id]
+    elif product_id:
+        return []
 
+    q = db.query(UpdateEvent).filter(UpdateEvent.product_id.in_(sub_product_ids))
     events = q.order_by(UpdateEvent.created_at.desc()).offset(skip).limit(limit).all()
 
     result = []
@@ -125,14 +110,31 @@ def get_update_feed(
 
 @router.patch("/feed/{email}/read/{event_id}", summary="标记更新事件为已读")
 def mark_event_read(email: str, event_id: int, db: Session = Depends(get_db)):
+    sub_product_ids = [r[0] for r in db.query(Subscription.product_id).filter(
+        Subscription.subscriber_email == email
+    ).all()]
+    if not sub_product_ids:
+        raise HTTPException(status_code=404, detail="无订阅")
+
+    evt = db.query(UpdateEvent).filter(UpdateEvent.id == event_id).first()
+    if not evt or evt.product_id not in sub_product_ids:
+        raise HTTPException(status_code=404, detail="更新记录不存在或未订阅")
+
     rs = db.query(UpdateReadStatus).filter(
         UpdateReadStatus.update_event_id == event_id,
         UpdateReadStatus.subscriber_email == email,
     ).first()
     if not rs:
-        raise HTTPException(status_code=404, detail="更新记录不存在或未订阅")
-    rs.is_read = True
-    rs.read_at = datetime.utcnow()
+        rs = UpdateReadStatus(
+            update_event_id=event_id,
+            subscriber_email=email,
+            is_read=True,
+            read_at=datetime.utcnow(),
+        )
+        db.add(rs)
+    else:
+        rs.is_read = True
+        rs.read_at = datetime.utcnow()
     db.commit()
     return {"detail": "已标记为已读"}
 
@@ -145,22 +147,30 @@ def mark_all_read(email: str, product_id: Optional[int] = None, db: Session = De
     if not sub_product_ids:
         return {"detail": "无订阅", "count": 0}
 
-    q = db.query(UpdateReadStatus).filter(
+    target_pids = sub_product_ids
+    if product_id:
+        if product_id not in sub_product_ids:
+            return {"detail": "未订阅该产品", "count": 0}
+        target_pids = [product_id]
+
+    unread = db.query(UpdateReadStatus).filter(
         UpdateReadStatus.subscriber_email == email,
         UpdateReadStatus.is_read == False,
-    )
-    if product_id:
-        evt_ids = [r[0] for r in db.query(UpdateEvent.id).filter(
-            UpdateEvent.product_id == product_id
-        ).all()]
-        q = q.filter(UpdateReadStatus.update_event_id.in_(evt_ids))
+    ).all()
+
+    unread_evt_ids = [rs.update_event_id for rs in unread]
+    target_evt_ids = [r[0] for r in db.query(UpdateEvent.id).filter(
+        UpdateEvent.id.in_(unread_evt_ids),
+        UpdateEvent.product_id.in_(target_pids),
+    ).all()] if unread_evt_ids else []
 
     now = datetime.utcnow()
     count = 0
-    for rs in q.all():
-        rs.is_read = True
-        rs.read_at = now
-        count += 1
+    for rs in unread:
+        if rs.update_event_id in target_evt_ids:
+            rs.is_read = True
+            rs.read_at = now
+            count += 1
     db.commit()
     return {"detail": f"已标记{count}条为已读", "count": count}
 
@@ -178,11 +188,15 @@ def get_unread_count(email: str, db: Session = Depends(get_db)):
         UpdateReadStatus.is_read == False,
     ).all()
 
-    evt_ids = [rs.update_event_id for rs in unread]
+    unread_evt_ids = [rs.update_event_id for rs in unread]
     by_product = {}
-    if evt_ids:
-        evts = db.query(UpdateEvent).filter(UpdateEvent.id.in_(evt_ids)).all()
+    if unread_evt_ids:
+        evts = db.query(UpdateEvent).filter(
+            UpdateEvent.id.in_(unread_evt_ids),
+            UpdateEvent.product_id.in_(sub_product_ids),
+        ).all()
         for e in evts:
             by_product[e.product_id] = by_product.get(e.product_id, 0) + 1
 
-    return {"total": len(unread), "by_product": by_product}
+    total = sum(by_product.values())
+    return {"total": total, "by_product": by_product}

@@ -216,11 +216,13 @@ def cross_entity_search(
             ))
 
     if not hit_type or hit_type == "price":
-        pc_filter = or_(
-            PriceChange.plan_name.ilike(kw),
-        )
-        for pc in db.query(PriceChange).filter(pc_filter).all():
-            text = f"{pc.plan_name}: {pc.old_price}→{pc.new_price} {pc.currency}"
+        for pc in db.query(PriceChange).all():
+            old_str = str(pc.old_price) if pc.old_price is not None else "N/A"
+            new_str = str(pc.new_price)
+            searchable = f"{pc.plan_name} {old_str} {new_str} {pc.currency}"
+            if q.lower() not in searchable.lower():
+                continue
+            text = f"{pc.plan_name}: {old_str} -> {new_str} {pc.currency} (生效: {pc.effective_date.strftime('%Y-%m-%d') if pc.effective_date else 'N/A'})"
             hits.append(SearchHit(
                 hit_type="price", product_id=pc.product_id,
                 product_name=product_map.get(pc.product_id, ""),
