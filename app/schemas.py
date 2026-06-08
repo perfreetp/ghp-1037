@@ -263,3 +263,53 @@ class CitationCardOut(BaseModel):
 class SearchResult(BaseModel):
     products: List[ProductOut]
     total: int
+
+
+class SearchHit(BaseModel):
+    hit_type: str
+    product_id: int
+    product_name: str
+    snippet: str
+    hit_time: Optional[str] = None
+
+
+class CrossSearchResult(BaseModel):
+    hits: List[SearchHit]
+    total: int
+
+
+class AuditLogOut(BaseModel):
+    id: int
+    product_id: int
+    appeal_id: Optional[int] = None
+    action: str
+    field_name: str
+    old_value: str
+    new_value: str
+    reviewed_by: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class UpdateEventOut(BaseModel):
+    id: int
+    product_id: int
+    event_type: str
+    description: str
+    created_at: datetime
+    is_read: Optional[bool] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CredibilityScoreOut(BaseModel):
+    product_id: int
+    product_name: str
+    score: float
+    high_count: int
+    medium_count: int
+    low_count: int
+    total_sources: int

@@ -29,6 +29,8 @@ class Product(Base):
     correction_appeals = relationship("CorrectionAppeal", back_populates="product", cascade="all, delete-orphan")
     source_credibilities = relationship("SourceCredibility", back_populates="product", cascade="all, delete-orphan")
     citation_cards = relationship("CitationCard", back_populates="product", cascade="all, delete-orphan")
+    audit_logs = relationship("AuditLog", back_populates="product", cascade="all, delete-orphan")
+    update_events = relationship("UpdateEvent", back_populates="product", cascade="all, delete-orphan")
 
 
 class Alias(Base):
@@ -163,6 +165,7 @@ class CorrectionAppeal(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     product = relationship("Product", back_populates="correction_appeals")
+    audit_logs = relationship("AuditLog", back_populates="appeal", cascade="all, delete-orphan")
 
 
 class SourceCredibility(Base):
@@ -188,3 +191,45 @@ class CitationCard(Base):
     generated_at = Column(DateTime, default=datetime.utcnow)
 
     product = relationship("Product", back_populates="citation_cards")
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    appeal_id = Column(Integer, ForeignKey("correction_appeals.id"), nullable=True)
+    action = Column(String(50), nullable=False)
+    field_name = Column(String(200), default="")
+    old_value = Column(Text, default="")
+    new_value = Column(Text, default="")
+    reviewed_by = Column(String(200), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    product = relationship("Product", back_populates="audit_logs")
+    appeal = relationship("CorrectionAppeal", back_populates="audit_logs")
+
+
+class UpdateEvent(Base):
+    __tablename__ = "update_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    event_type = Column(String(100), nullable=False)
+    description = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    product = relationship("Product", back_populates="update_events")
+    read_statuses = relationship("UpdateReadStatus", back_populates="update_event", cascade="all, delete-orphan")
+
+
+class UpdateReadStatus(Base):
+    __tablename__ = "update_read_statuses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    update_event_id = Column(Integer, ForeignKey("update_events.id"), nullable=False)
+    subscriber_email = Column(String(200), nullable=False)
+    is_read = Column(Boolean, default=False)
+    read_at = Column(DateTime, nullable=True)
+
+    update_event = relationship("UpdateEvent", back_populates="read_statuses")
